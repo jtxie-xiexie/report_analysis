@@ -1,0 +1,14 @@
+// Return all DFS database and table pairs.
+// Output columns: db (STRING), tableName (STRING)
+
+dbs = getClusterDFSDatabases()
+res = table(10000:0, `db`tableName, [STRING, STRING])
+
+for (db in dbs){
+    tbs = getTables(database(db))
+    for (tb in tbs){
+        insert into res values(db, string(tb))
+    }
+}
+
+select * from res order by db, tableName

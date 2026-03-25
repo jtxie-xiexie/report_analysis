@@ -1,0 +1,4 @@
+interface:
+  display_name: "DolphinDB DOS Framework"
+  short_description: "DolphinDB dos skill scaffold via Python API."
+  default_prompt: "Use this skill to scaffold and operate DolphinDB-centric skills where business logic is written in .dos scripts and executed through Python API."

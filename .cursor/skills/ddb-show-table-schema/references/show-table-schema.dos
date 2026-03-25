@@ -1,0 +1,7 @@
+// Show full schema for one table.
+// Required uploaded variables:
+//   dbUrl STRING
+//   tableName STRING
+// Missing variables will raise errors when referenced.
+
+schema(loadTable(dbUrl, tableName))
