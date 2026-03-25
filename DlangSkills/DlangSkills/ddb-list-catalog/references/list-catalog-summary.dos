@@ -1,0 +1,12 @@
+// Return per-database table counts.
+// Output columns: db (STRING), tableCount (LONG)
+
+dbs = getClusterDFSDatabases()
+res = table(10000:0, `db`tableCount, [STRING, LONG])
+
+for (db in dbs){
+    tbs = getTables(database(db))
+    insert into res values(db, long(size(tbs)))
+}
+
+select * from res order by db

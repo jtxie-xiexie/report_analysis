@@ -1,0 +1,9 @@
+// Show schema of one table.
+// Required uploaded variables from Python:
+//   dbUrl     STRING, e.g. "dfs://sample_demo"
+//   tableName STRING, e.g. "stock_daily"
+
+if(!exists("dbUrl")) throw "Missing required variable: dbUrl"
+if(!exists("tableName")) throw "Missing required variable: tableName"
+
+schema(loadTable(dbUrl, tableName))
