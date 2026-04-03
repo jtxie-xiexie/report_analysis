@@ -1,0 +1,10 @@
+{
+  "content": "overnight_distance_factor因子首先计算每只股票的日内收益率（收盘价/开盘价-1）和换手率变化量（当日换手率-前一日换手率）。然后计算全市场换手率变化量的截面均值，将个股换手率变化量与该均值比较：低于均值的股票日内收益率乘以-1（翻转），高于均值的保持不变。最后计算过去20个交易日翻转后收益率的移动平均值，并在每月最后一个交易日输出因子值。",
+  "factor": "overnight_distance_factor",
+  "dataSources": [
+    {
+      "dbName": "dfs://stock_daily",
+      "tbName": "stock_daily_prev"
+    }
+  ]
+}

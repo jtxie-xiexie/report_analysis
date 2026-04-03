@@ -1,0 +1,129 @@
+{
+  "task": {
+    "content": "overnight_distance_factor因子首先计算每只股票的日内收益率（收盘价/开盘价-1）和换手率变化量（当日换手率-前一日换手率）。然后计算全市场换手率变化量的截面均值，将个股换手率变化量与该均值比较：低于均值的股票日内收益率乘以-1（翻转），高于均值的保持不变。最后计算过去20个交易日翻转后收益率的移动平均值，并在每月最后一个交易日输出因子值。",
+    "factor": "overnight_distance_factor",
+    "dataSources": [
+      {
+        "dbName": "dfs://stock_daily",
+        "tbName": "stock_daily_prev"
+      }
+    ],
+    "forceMR": null,
+    "outputDir": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\overnight_distance_factor"
+  },
+  "preResult": {
+    "description": "overnight_distance_factor因子首先计算每只股票的日内收益率（收盘价/开盘价-1）和换手率变化量（当日换手率-前一日换手率）。然后计算全市场换手率变化量的截面均值，将个股换手率变化量与该均值比较：低于均值的股票日内收益率乘以-1（翻转），高于均值的保持不变。最后计算过去20个交易日翻转后收益率的移动平均值，并在每月最后一个交易日输出因子值。",
+    "formulation": "1. 计算日内收益率：intraday_return = close / open - 1\n2. 计算换手率变化量：turnover_change = turnover - prev_turnover\n3. 计算全市场换手率变化量的截面均值：market_turnover_change_mean = mean(turnover_change) across all stocks\n4. 翻转收益率：adjusted_return = if(turnover_change < market_turnover_change_mean, -1 * intraday_return, intraday_return)\n5. 计算20日移动平均：factor_value = mavg(adjusted_return, 20)\n6. 每月最后一个交易日输出因子值",
+    "factor_chinese_name": "隔夜距离因子",
+    "field_requirements": "需要字段：tradeTime（交易时间）, securityId（股票代码）, open（开盘价）, close（收盘价）, turnover（换手率）。需要前一日换手率用于计算换手率变化量。",
+    "targetFreqGuess": "daily",
+    "isCSGuess": "true",
+    "isSlideGuess": "true",
+    "computeFreqGuess": "monthly",
+    "windowSizeGuess": "20"
+  },
+  "finalResult": {
+    "factor_chinese_name": "隔夜距离因子",
+    "hypothesis": "该因子假设股票的日内收益率与换手率变化量相对于市场平均水平的关系能够预测未来表现。当个股换手率变化低于市场平均水平时，反转其日内收益率信号；当高于市场平均水平时，保持原信号。通过计算翻转后收益率的20日移动平均，捕捉这种相对换手率变化对股价影响的持续性。",
+    "description": "overnight_distance_factor因子首先计算每只股票的日内收益率（收盘价/开盘价-1）和换手率变化量（当日换手率-前一日换手率）。然后计算全市场换手率变化量的截面均值，将个股换手率变化量与该均值比较：低于均值的股票日内收益率乘以-1（翻转），高于均值的保持不变。最后计算过去20个交易日翻转后收益率的移动平均值，并在每月最后一个交易日输出因子值。",
+    "formulation": "1. 计算日内收益率：intraday_return = close / open - 1\n2. 计算换手率变化量：turnover_change = turnover_rate - prev(turnover_rate)\n3. 计算全市场换手率变化量的截面均值：market_turnover_mean = avg(turnover_change) by trade_date\n4. 翻转收益率：adjusted_return = iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return)\n5. 计算20日移动平均：factor_value = mavg(adjusted_return, 20)\n6. 每月最后一个交易日输出因子值：result = select where tradeTime == monthEnd(tradeTime)",
+    "feedback": "因子计算成功完成。使用了dfs://stock_daily数据库中的stock_daily_prev表，包含开盘价、收盘价、换手率等必要字段。计算过程包括：日内收益率计算、换手率变化量计算、市场截面均值计算、收益率翻转、20日移动平均计算，最后筛选每月最后一个交易日输出结果。共生成226,552条因子记录，符合预期。",
+    "code": "// overnight_distance_factor 因子计算\n// 1. 计算日内收益率：intraday_return = close / open - 1\n// 2. 计算换手率变化量：turnover_change = turnover_rate - prev_turnover_rate\n// 3. 计算全市场换手率变化量的截面均值\n// 4. 翻转收益率：adjusted_return = if(turnover_change < market_mean, -1 * intraday_return, intraday_return)\n// 5. 计算20日移动平均\n// 6. 每月最后一个交易日输出因子值\n\n// 加载数据\nt = loadTable(\"dfs://stock_daily\", \"stock_daily_prev\")\n\n// 按股票代码和时间排序\nt = select ts_code as securityId, trade_date as tradeTime, open, close, turnover_rate from t order by securityId, tradeTime\n\n// 计算日内收益率\nt = select *, close / open - 1 as intraday_return from t context by securityId\n\n// 计算换手率变化量（当日换手率 - 前一日换手率）\nt = select *, turnover_rate - prev(turnover_rate) as turnover_change from t context by securityId\n\n// 计算每日全市场换手率变化量的截面均值\nmarket_mean = select tradeTime, avg(turnover_change) as market_turnover_mean from t where isValid(turnover_change) group by tradeTime\n\n// 合并市场均值到个股数据\nt = lj(t, market_mean, `tradeTime)\n\n// 翻转收益率：低于市场均值的股票日内收益率乘以-1\nt = select *, iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return) as adjusted_return from t\n\n// 计算20日移动平均的翻转后收益率\nt = select *, mavg(adjusted_return, 20) as factor_value from t context by securityId\n\n// 筛选每月最后一个交易日\n// 首先标记每月最后一天\nt = select *, monthEnd(tradeTime) as month_end from t\nt = select *, tradeTime == month_end as is_month_end from t\n\n// 生成最终结果表：每月最后一个交易日的因子值\nresult = select tradeTime, securityId, \"overnight_distance_factor\" as factorname, factor_value as value from t where is_month_end = true and isValid(factor_value)\n\n// 按时间和股票排序\nresult = select * from result order by tradeTime, securityId\n\nresult",
+    "executeType": "execute",
+    "hypothesis_feedback": "因子逻辑合理：1）使用换手率变化量作为市场情绪指标，反映资金流动变化；2）通过与市场平均水平比较，识别异常换手行为；3）对异常换手股票进行收益率信号翻转，捕捉反转效应；4）20日移动平均平滑噪声，提取持续信号；5）月度频率输出适合中长期策略。该因子结合了技术指标（换手率）和行为金融（反转效应）原理。"
+  },
+  "execution": {
+    "executeType": "execute",
+    "code": "// overnight_distance_factor 因子计算\n// 1. 计算日内收益率：intraday_return = close / open - 1\n// 2. 计算换手率变化量：turnover_change = turnover_rate - prev_turnover_rate\n// 3. 计算全市场换手率变化量的截面均值\n// 4. 翻转收益率：adjusted_return = if(turnover_change < market_mean, -1 * intraday_return, intraday_return)\n// 5. 计算20日移动平均\n// 6. 每月最后一个交易日输出因子值\n\n// 加载数据\nt = loadTable(\"dfs://stock_daily\", \"stock_daily_prev\")\n\n// 按股票代码和时间排序\nt = select ts_code as securityId, trade_date as tradeTime, open, close, turnover_rate from t order by securityId, tradeTime\n\n// 计算日内收益率\nt = select *, close / open - 1 as intraday_return from t context by securityId\n\n// 计算换手率变化量（当日换手率 - 前一日换手率）\nt = select *, turnover_rate - prev(turnover_rate) as turnover_change from t context by securityId\n\n// 计算每日全市场换手率变化量的截面均值\nmarket_mean = select tradeTime, avg(turnover_change) as market_turnover_mean from t where isValid(turnover_change) group by tradeTime\n\n// 合并市场均值到个股数据\nt = lj(t, market_mean, `tradeTime)\n\n// 翻转收益率：低于市场均值的股票日内收益率乘以-1\nt = select *, iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return) as adjusted_return from t\n\n// 计算20日移动平均的翻转后收益率\nt = select *, mavg(adjusted_return, 20) as factor_value from t context by securityId\n\n// 筛选每月最后一个交易日\n// 首先标记每月最后一天\nt = select *, monthEnd(tradeTime) as month_end from t\nt = select *, tradeTime == month_end as is_month_end from t\n\n// 生成最终结果表：每月最后一个交易日的因子值\nresult = select tradeTime, securityId, \"overnight_distance_factor\" as factorname, factor_value as value from t where is_month_end = true and isValid(factor_value)\n\n// 按时间和股票排序\nresult = select * from result order by tradeTime, securityId\n\nresult",
+    "columns": [
+      "tradeTime",
+      "securityId",
+      "factorname",
+      "value"
+    ],
+    "rowCount": 226552,
+    "preview": [
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000001.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": -0.009274057095528244
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000002.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": -0.0027014225720041253
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000004.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": -0.014478176705159778
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000006.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": -0.002810213686575602
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000007.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": 0.001305236469758303
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000008.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": 0.0012362660389550583
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000009.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": -0.0054973476132171685
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000010.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": 0.005111242681247874
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000011.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": 0.009550558440654333
+      },
+      {
+        "tradeTime": "2020-03-31 00:00:00",
+        "securityId": "000012.SZ",
+        "factorname": "overnight_distance_factor",
+        "value": 0.0005922171997178704
+      }
+    ],
+    "selectedDataSource": {
+      "dbName": "dfs://stock_daily",
+      "tbName": "stock_daily_prev"
+    }
+  },
+  "artifacts": {
+    "codeFile": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\overnight_distance_factor\\overnight_distance_factor.dos",
+    "resultFile": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\overnight_distance_factor\\result.json",
+    "evaluationFile": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\overnight_distance_factor\\evaluation.json"
+  },
+  "connections": {
+    "dolphindb": {
+      "host": "192.168.100.43",
+      "port": 7301,
+      "user": "admin"
+    },
+    "dolphinx": {
+      "host": "192.168.100.43",
+      "port": 7301,
+      "user": "admin"
+    }
+  }
+}

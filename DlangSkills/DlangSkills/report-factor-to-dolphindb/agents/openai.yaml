@@ -1,0 +1,4 @@
+interface:
+  display_name: "Report Factor To DolphinDB"
+  short_description: "Minimal runnable framework for turning report factors into DolphinDB code, result.json, and evaluation.json."
+  default_prompt: "Use this skill to run the minimal end-to-end report-factor pipeline: normalize report input, discover DolphinDB data sources with getAllAvailableData when needed, let the DolphinDB core inspect schemas and samples, choose mrExecute or execute via mrEligible, generate runnable factor code, and emit the final .dos script, result.json, and evaluation.json. The single entrypoint is scripts/run_factor_pipeline.py and the business core lives in dos/factor_pipeline_core.dos."

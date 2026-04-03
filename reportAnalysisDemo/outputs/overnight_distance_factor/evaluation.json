@@ -1,0 +1,123 @@
+{
+  "status": "error",
+  "message": "<Exception> in exec: Server Response: 'generateAnalysisReport(\"// overnight_distance_factor 因子计算 // 1. 计算日内收益率：intraday_return = close / open - 1 // 2. 计算换手率变化量：turnover_change = turnover_rate - prev_turnover_rate // 3. 计算全市场换手率变化量的截面均值 // 4. 翻转收益率：adjusted_return = if(turnover_change < market_mean, -1 * intraday_return, intraday_return) // 5. 计算20日移动平均 // 6. 每月最后一个交易日输出因子值  // 加载数据 t = loadTable(\\\"dfs://stock_daily\\\", \\\"stock_daily_prev\\\")  // 按股票代码和时间排序 t = select ts_code as securityId, trade_date as tradeTime, open, close, turnover_rate from t order by securityId, tradeTime  // 计算日内收益率 t = select *, close / open - 1 as intraday_return from t context by securityId  // 计算换手率变化量（当日换手率 - 前一日换手率） t = select *, turnover_rate - prev(turnover_rate) as turnover_change from t context by securityId  // 计算每日全市场换手率变化量的截面均值 market_mean = select tradeTime, avg(turnover_change) as market_turnover_mean from t where isValid(turnover_change) group by tradeTime  // 合并市场均值到个股数据 t = lj(t, market_mean, `tradeTime)  // 翻转收益率：低于市场均值的股票日内收益率乘以-1 t = select *, iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return) as adjusted_return from t  // 计算20日移动平均的翻转后收益率 t = select *, mavg(adjusted_return, 20) as factor_value from t context by securityId  // 筛选每月最后一个交易日 // 首先标记每月最后一天 t = select *, monthEnd(tradeTime) as month_end from t t = select *, tradeTime == month_end as is_month_end from t  // 生成最终结果表：每月最后一个交易日的因子值 result = select tradeTime, securityId, \\\"overnight_distance_factor\\\" as factorname, factor_value as value from t where is_month_end = true and isValid(factor_value)  // 按时间和股票排序 result = select * from result order by tradeTime, securityId  result\", \"execute\", string(priceSource[\"priceDbname\"]), string(priceSource[\"priceTbname\"]), string(priceSource[\"priceDate\"]), string(priceSource[\"priceSymbol\"]), string(priceSource[\"priceCol\"]), \"dfs://stock_daily\", \"stock_daily_prev\") => generateAnalysisReport: res = eval(parseExpr(((template_name + \"(\") + concat((keys(analysis_param_dict) + \"=\") + keys(analysis_param_dict), \",\")) + \")\", analysis_param_dict)) => alphalensReportAnalysis: dicts = alphalens::alphalens::plot_factorAnalysis(factor, prices, groupby, binning_by_group, quantiles, bins, periods, filter_zscore, groupby_labels, max_loss, zero_aware, cumulative_returns, long_short, group_neutral, by_group) => alphalens::plot_factorAnalysis: factor_data = alphalens::get_clean_factor_and_forward_returns(factor, prices, groupby, binning_by_group, quantiles, bins, periods, filter_zscore, groupby_labels, max_loss, zero_aware, cumulative_returns) => alphalens::get_clean_factor_and_forward_returns: factor_data = alphalens::get_clean_factor(factor, forward_returns, groupby, binning_by_group, quantiles, bins, groupby_labels, max_loss, zero_aware) => alphalens::get_clean_factor: merged_data = eval(sql(sqlCol(\"*\"), lsj(merged_data,factor_copy,colNames(factor_copy)[ : 2]))) => The leading arguments of a join operation must be tables.' script: \nselectedSourceInfo = inspectSource(\"dfs://stock_daily\", \"stock_daily_prev\");\ndiscoveredSources = getAllAvailableData();\npriceSource = choosePriceSource(selectedSourceInfo, discoveredSources);\ngenerateAnalysisReport(\n    \"// overnight_distance_factor 因子计算\\n// 1. 计算日内收益率：intraday_return = close / open - 1\\n// 2. 计算换手率变化量：turnover_change = turnover_rate - prev_turnover_rate\\n// 3. 计算全市场换手率变化量的截面均值\\n// 4. 翻转收益率：adjusted_return = if(turnover_change < market_mean, -1 * intraday_return, intraday_return)\\n// 5. 计算20日移动平均\\n// 6. 每月最后一个交易日输出因子值\\n\\n// 加载数据\\nt = loadTable(\\\"dfs://stock_daily\\\", \\\"stock_daily_prev\\\")\\n\\n// 按股票代码和时间排序\\nt = select ts_code as securityId, trade_date as tradeTime, open, close, turnover_rate from t order by securityId, tradeTime\\n\\n// 计算日内收益率\\nt = select *, close / open - 1 as intraday_return from t context by securityId\\n\\n// 计算换手率变化量（当日换手率 - 前一日换手率）\\nt = select *, turnover_rate - prev(turnover_rate) as turnover_change from t context by securityId\\n\\n// 计算每日全市场换手率变化量的截面均值\\nmarket_mean = select tradeTime, avg(turnover_change) as market_turnover_mean from t where isValid(turnover_change) group by tradeTime\\n\\n// 合并市场均值到个股数据\\nt = lj(t, market_mean, `tradeTime)\\n\\n// 翻转收益率：低于市场均值的股票日内收益率乘以-1\\nt = select *, iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return) as adjusted_return from t\\n\\n// 计算20日移动平均的翻转后收益率\\nt = select *, mavg(adjusted_return, 20) as factor_value from t context by securityId\\n\\n// 筛选每月最后一个交易日\\n// 首先标记每月最后一天\\nt = select *, monthEnd(tradeTime) as month_end from t\\nt = select *, tradeTime == month_end as is_month_end from t\\n\\n// 生成最终结果表：每月最后一个交易日的因子值\\nresult = select tradeTime, securityId, \\\"overnight_distance_factor\\\" as factorname, factor_value as value from t where is_month_end = true and isValid(factor_value)\\n\\n// 按时间和股票排序\\nresult = select * from result order by tradeTime, securityId\\n\\nresult\",\n    \"execute\",\n    string(priceSource[\"priceDbname\"]),\n    string(priceSource[\"priceTbname\"]),\n    string(priceSource[\"priceDate\"]),\n    string(priceSource[\"priceSymbol\"]),\n    string(priceSource[\"priceCol\"]),\n    \"dfs://stock_daily\",\n    \"stock_daily_prev\"\n)\n",
+  "fallback": {
+    "status": "placeholder",
+    "factor": "overnight_distance_factor",
+    "executeType": "execute",
+    "selectedDataSource": {
+      "dbName": "dfs://stock_daily",
+      "tbName": "stock_daily_prev"
+    },
+    "resultMeta": {
+      "executeType": "execute",
+      "code": "// overnight_distance_factor 因子计算\n// 1. 计算日内收益率：intraday_return = close / open - 1\n// 2. 计算换手率变化量：turnover_change = turnover_rate - prev_turnover_rate\n// 3. 计算全市场换手率变化量的截面均值\n// 4. 翻转收益率：adjusted_return = if(turnover_change < market_mean, -1 * intraday_return, intraday_return)\n// 5. 计算20日移动平均\n// 6. 每月最后一个交易日输出因子值\n\n// 加载数据\nt = loadTable(\"dfs://stock_daily\", \"stock_daily_prev\")\n\n// 按股票代码和时间排序\nt = select ts_code as securityId, trade_date as tradeTime, open, close, turnover_rate from t order by securityId, tradeTime\n\n// 计算日内收益率\nt = select *, close / open - 1 as intraday_return from t context by securityId\n\n// 计算换手率变化量（当日换手率 - 前一日换手率）\nt = select *, turnover_rate - prev(turnover_rate) as turnover_change from t context by securityId\n\n// 计算每日全市场换手率变化量的截面均值\nmarket_mean = select tradeTime, avg(turnover_change) as market_turnover_mean from t where isValid(turnover_change) group by tradeTime\n\n// 合并市场均值到个股数据\nt = lj(t, market_mean, `tradeTime)\n\n// 翻转收益率：低于市场均值的股票日内收益率乘以-1\nt = select *, iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return) as adjusted_return from t\n\n// 计算20日移动平均的翻转后收益率\nt = select *, mavg(adjusted_return, 20) as factor_value from t context by securityId\n\n// 筛选每月最后一个交易日\n// 首先标记每月最后一天\nt = select *, monthEnd(tradeTime) as month_end from t\nt = select *, tradeTime == month_end as is_month_end from t\n\n// 生成最终结果表：每月最后一个交易日的因子值\nresult = select tradeTime, securityId, \"overnight_distance_factor\" as factorname, factor_value as value from t where is_month_end = true and isValid(factor_value)\n\n// 按时间和股票排序\nresult = select * from result order by tradeTime, securityId\n\nresult",
+      "columns": [
+        "tradeTime",
+        "securityId",
+        "factorname",
+        "value"
+      ],
+      "rowCount": 226552,
+      "preview": [
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000001.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": -0.009274057095528244
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000002.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": -0.0027014225720041253
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000004.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": -0.014478176705159778
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000006.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": -0.002810213686575602
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000007.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": 0.001305236469758303
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000008.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": 0.0012362660389550583
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000009.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": -0.0054973476132171685
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000010.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": 0.005111242681247874
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000011.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": 0.009550558440654333
+        },
+        {
+          "tradeTime": "2020-03-31 00:00:00",
+          "securityId": "000012.SZ",
+          "factorname": "overnight_distance_factor",
+          "value": 0.0005922171997178704
+        }
+      ],
+      "selectedDataSource": {
+        "dbName": "dfs://stock_daily",
+        "tbName": "stock_daily_prev"
+      }
+    },
+    "toolTrace": [
+      {
+        "tool": "pre-result",
+        "success": true,
+        "summary": "pre-result saved"
+      },
+      {
+        "tool": "coldefs",
+        "success": true,
+        "summary": "coldefs completed"
+      },
+      {
+        "tool": "testsql",
+        "success": true,
+        "summary": "testsql completed"
+      },
+      {
+        "tool": "mrEligible",
+        "success": false,
+        "summary": "'targetFreq' must be one of ['DATE', 'DATETIME', 'DAY', 'HOUR', 'MINUTE', 'MONTH', 'NANOTIME', 'NANOTIMESTAMP', 'SECOND', 'TIME', 'TIMESTAMP', 'YEAR'], got 'daily'"
+      },
+      {
+        "tool": "mrEligible",
+        "success": true,
+        "summary": "mrEligible completed"
+      },
+      {
+        "tool": "execute",
+        "success": true,
+        "summary": "execute completed"
+      }
+    ],
+    "note": "v1 does not run a separate evaluation engine; this file preserves a stable artifact contract."
+  }
+}

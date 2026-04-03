@@ -1,0 +1,11 @@
+{
+  "content": "请根据研报内容提取一个 20 日波动率相关因子的逻辑，要求输出可执行 DolphinDB 代码，并严格校验字段与执行模式。",
+  "factor": "Return_Volatility20",
+  "dataSources": [
+    {
+      "dbName": "dfs://stockMinKSH",
+      "tbName": "stockMinKSH_v2"
+    }
+  ],
+  "forceMR": null
+}

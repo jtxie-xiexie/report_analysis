@@ -1,0 +1,68 @@
+{
+  "task": {
+    "content": "请构造一个最简单的分钟频因子：1分钟收益率。使用分钟行情表中的 LastPx 作为价格字段，按照每个 SecurityID 的 DateTime 升序计算当前分钟相对上一分钟的收益率，即 LastPx / prev(LastPx) - 1。",
+    "factor": "Minute_Return_1",
+    "dataSources": [
+      {
+        "dbName": "dfs://stockMinKSH",
+        "tbName": "stockMinKSH_v2"
+      }
+    ],
+    "forceMR": null,
+    "outputDir": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\Minute_Return_1"
+  },
+  "preResult": {
+    "description": "计算每个证券每分钟的收益率，使用分钟行情表中的最新成交价（LastPx）作为价格字段，按照每个SecurityID的时间顺序计算当前分钟相对上一分钟的收益率。",
+    "formulation": "收益率 = LastPx / prev(LastPx) - 1，其中prev(LastPx)表示同一证券上一分钟的LastPx值",
+    "factor_chinese_name": "1分钟收益率",
+    "field_requirements": "需要包含SecurityID（证券代码）、DateTime（时间戳）、LastPx（最新成交价）字段",
+    "targetFreqGuess": "1min",
+    "isCSGuess": "true",
+    "isSlideGuess": "false",
+    "computeFreqGuess": "1min",
+    "windowSizeGuess": "null"
+  },
+  "finalResult": {
+    "factor_chinese_name": "1分钟收益率",
+    "hypothesis": "使用分钟行情表中的最新成交价（LastPx）计算每个证券每分钟的收益率，即当前分钟价格相对于上一分钟价格的变动百分比。",
+    "description": "计算每个证券每分钟的收益率，使用分钟行情表中的最新成交价（LastPx）作为价格字段，按照每个SecurityID的时间顺序计算当前分钟相对上一分钟的收益率。",
+    "formulation": "收益率 = LastPx / prev(LastPx) - 1，其中prev(LastPx)表示同一证券上一分钟的LastPx值",
+    "feedback": "因子计算成功。使用MR模式执行，按SecurityID分组计算每分钟收益率，过滤掉每个证券的第一分钟数据（因为没有前一时间点的价格）。",
+    "code": "def mapFunc(t){\n    // 按SecurityID分组，按DateTime排序\n    t_sorted = select SecurityID, DateTime, LastPx from t order by SecurityID, DateTime\n    // 计算1分钟收益率：LastPx / prev(LastPx) - 1\n    result = select \n        DateTime as tradeTime,\n        SecurityID as securityId,\n        'Minute_Return_1' as factorname,\n        LastPx / prev(LastPx) - 1 as value\n    from t_sorted context by SecurityID\n    // 过滤掉第一行（没有前一行数据）\n    result = select * from result where not isNull(value)\n    return result\n}",
+    "executeType": "mrExecute",
+    "hypothesis_feedback": "因子逻辑清晰简单，直接使用LastPx字段计算相邻时间点的价格变动率。数据源包含所需字段，时间粒度为1分钟，适合计算分钟频收益率。MR模式能够高效处理跨证券的分组计算。"
+  },
+  "execution": {
+    "executeType": "mrExecute",
+    "code": "def mapFunc(t){\n    // 按SecurityID分组，按DateTime排序\n    t_sorted = select SecurityID, DateTime, LastPx from t order by SecurityID, DateTime\n    // 计算1分钟收益率：LastPx / prev(LastPx) - 1\n    result = select \n        DateTime as tradeTime,\n        SecurityID as securityId,\n        'Minute_Return_1' as factorname,\n        LastPx / prev(LastPx) - 1 as value\n    from t_sorted context by SecurityID\n    // 过滤掉第一行（没有前一行数据）\n    result = select * from result where not isNull(value)\n    return result\n}",
+    "columns": [
+      "tradeTime",
+      "securityId",
+      "factorname",
+      "value"
+    ],
+    "rowCount": 0,
+    "preview": [],
+    "selectedDataSource": {
+      "dbName": "dfs://stockMinKSH",
+      "tbName": "stockMinKSH_v2"
+    }
+  },
+  "artifacts": {
+    "codeFile": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\Minute_Return_1\\Minute_Return_1_mr.dos",
+    "resultFile": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\Minute_Return_1\\result.json",
+    "evaluationFile": "D:\\Desktop\\研报分析\\report_analysis\\reportAnalysisDemo\\outputs\\Minute_Return_1\\evaluation.json"
+  },
+  "connections": {
+    "dolphindb": {
+      "host": "192.168.100.43",
+      "port": 7301,
+      "user": "admin"
+    },
+    "dolphinx": {
+      "host": "192.168.100.43",
+      "port": 7301,
+      "user": "admin"
+    }
+  }
+}

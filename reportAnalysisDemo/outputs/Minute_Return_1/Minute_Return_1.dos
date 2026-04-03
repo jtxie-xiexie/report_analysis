@@ -1,0 +1,22 @@
+// 计算1分钟收益率因子
+dbName = "dfs://stockMinKSH"
+tbName = "stockMinKSH_v2"
+
+// 加载数据
+t = loadTable(dbName, tbName)
+
+// 选择需要的字段并按SecurityID、DateTime排序
+t = select SecurityID, DateTime, LastPx from t order by SecurityID, DateTime
+
+// 计算1分钟收益率：LastPx / prev(LastPx) - 1，按SecurityID分组
+result = select SecurityID as securityId, DateTime as tradeTime, 
+         LastPx / prev(LastPx) - 1 as value from t context by SecurityID
+
+// 添加因子名
+result = select tradeTime, securityId, "Minute_Return_1" as factorname, value from result
+
+// 过滤掉第一条记录（没有前一条记录）
+result = select * from result where not isNull(value)
+
+// 返回结果
+result

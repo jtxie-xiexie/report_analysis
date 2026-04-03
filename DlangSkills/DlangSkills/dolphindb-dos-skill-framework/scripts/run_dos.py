@@ -87,7 +87,7 @@ def main() -> int:
     script = load_script(args.script, args.eval)
     variables = parse_set_values(args.set)
 
-    session = ddb.session(ssl=args.ssl)
+    session = ddb.session(enableSSL=args.ssl)
     session.connect(args.host, args.port, args.user, args.password)
 
     if variables:

@@ -1,8 +1,0 @@
-// Show columns definition only for one table.
-// Required uploaded variables:
-//   dbUrl STRING
-//   tableName STRING
-// Missing variables will raise errors when referenced.
-
-s = schema(loadTable(dbUrl, tableName))
-s["colDefs"]

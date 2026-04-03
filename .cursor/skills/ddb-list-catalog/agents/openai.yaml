@@ -1,4 +1,0 @@
-interface:
-  display_name: "DDB Catalog Viewer"
-  short_description: "List DolphinDB databases and tables quickly."
-  default_prompt: "Use this skill to list current DolphinDB DFS databases and table names by executing .dos via a shared Python gateway."

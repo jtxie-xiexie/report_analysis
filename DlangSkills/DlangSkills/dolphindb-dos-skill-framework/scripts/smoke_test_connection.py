@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--ssl", action="store_true")
     args = parser.parse_args()
 
-    session = ddb.session(ssl=args.ssl)
+    session = ddb.session(enableSSL=args.ssl)
     session.connect(args.host, args.port, args.user, args.password)
     value = session.run("1+1")
     print(f"connected=true result={value}")

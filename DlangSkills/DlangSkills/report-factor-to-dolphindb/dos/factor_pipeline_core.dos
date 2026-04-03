@@ -1,0 +1,928 @@
+// DolphinDB-driven factor pipeline core.
+// Python only uploads inputs, loads this script, calls runFactorPipeline, and writes artifacts to disk.
+
+use starfish::facplfRun
+
+def getAllAvailableData() {
+    return starfish::facplfBasic::facplf_get_all_tables_for_AI_task()
+}
+
+def tableRows(t) {
+    return (exec count(*) from t)[0]
+}
+
+def createSourceTable(dbNames, tbNames) {
+    if (size(dbNames) != size(tbNames)) {
+        throw "dbNames and tbNames must have the same size"
+    }
+    if (size(dbNames) == 0) {
+        return table(array(STRING, 0) as database, array(STRING, 0) as table, array(BOOL, 0) as accessible)
+    }
+    return table(dbNames as database, tbNames as table, take(true, size(dbNames)) as accessible)
+}
+
+def normalizeTask(content, factor, forceMR, dbNames, tbNames) {
+    if (string(content) == "") {
+        throw "Missing content"
+    }
+    if (string(factor) == "") {
+        throw "Missing factor"
+    }
+
+    ret = dict(STRING, ANY)
+    ret["content"] = string(content)
+    ret["factor"] = string(factor)
+    ret["forceMR"] = forceMR
+    ret["dataSources"] = createSourceTable(dbNames, tbNames)
+    return ret
+}
+
+def discoverSources(task) {
+    sources = task["dataSources"]
+    if (tableRows(sources) > 0) {
+        return sources
+    }
+    sources = getAllAvailableData()
+    if (tableRows(sources) == 0) {
+        throw "No available data sources"
+    }
+    return sources
+}
+
+def hasField(colDefs, fieldName) {
+    return sum(lower(colDefs.name) == lower(string(fieldName))) > 0
+}
+
+def isNumericType(typeName) {
+    typeTxt = upper(string(typeName))
+    return typeTxt in ["DOUBLE", "FLOAT", "LONG", "INT", "SHORT", "DECIMAL32", "DECIMAL64", "DECIMAL128"]
+}
+
+def semanticTokens(semantic) {
+    key = string(semantic)
+    if (key == "security") {
+        return ["securityid", "security_id", "security", "symbol", "ticker", "ts_code", "stock_code", "code"]
+    }
+    if (key == "time") {
+        return ["tradetime", "trade_time", "datetime", "date_time", "trade_date", "date", "time", "record_date"]
+    }
+    if (key == "price") {
+        return ["close", "lastpx", "last_px", "lastprice", "last_price", "price_close", "closepx", "close_px", "price"]
+    }
+    if (key == "high") {
+        return ["highpx", "high_px", "price_high", "high"]
+    }
+    if (key == "low") {
+        return ["lowpx", "low_px", "price_low", "low"]
+    }
+    if (key == "volume") {
+        return ["volume", "trade_vol", "totalvolume", "total_volume", "vol", "qty", "size"]
+    }
+    if (key == "amount") {
+        return ["amount", "turnover", "trade_amount", "value", "val", "amt"]
+    }
+    if (key == "return") {
+        return ["pct_chg", "pctchg", "return_day", "return", "ret"]
+    }
+    if (key == "prev_close") {
+        return ["pre_close", "preclose", "prevclose", "prev_close", "pre_price_close", "prevprice", "prev_px", "preclosepx", "preclose_px"]
+    }
+    return []
+}
+
+def semanticTypeScore(semantic, typeName) {
+    key = string(semantic)
+    typeTxt = upper(string(typeName))
+    if (key == "security" && typeTxt == "SYMBOL") {
+        return 30
+    }
+    if (key == "time" && typeTxt in ["TIMESTAMP", "NANOTIMESTAMP", "DATETIME", "DATE"]) {
+        return 30
+    }
+    if ((key == "price" || key == "high" || key == "low" || key == "amount" || key == "return" || key == "prev_close") && isNumericType(typeTxt)) {
+        return 15
+    }
+    if (key == "volume" && typeTxt in ["LONG", "INT", "SHORT", "DOUBLE", "FLOAT"]) {
+        return 15
+    }
+    return 0
+}
+
+def scoreFieldSemantic(fieldName, typeName, semantic) {
+    nameTxt = lower(string(fieldName))
+    score = semanticTypeScore(semantic, typeName)
+    tokens = semanticTokens(semantic)
+
+    for (token in tokens) {
+        tokenTxt = lower(string(token))
+        if (nameTxt == tokenTxt) {
+            score = score + 80
+        } else if (like(nameTxt, "%" + tokenTxt + "%")) {
+            score = score + 35
+        }
+    }
+
+    if (string(semantic) == "price") {
+        if (like(nameTxt, "%open%") || like(nameTxt, "%high%") || like(nameTxt, "%low%")) {
+            score = score - 25
+        }
+    }
+    if (string(semantic) == "time" && like(nameTxt, "%update%")) {
+        score = score - 20
+    }
+    return score
+}
+
+def inferSemanticField(colDefs, semantic) {
+    bestField = ""
+    bestScore = -9999
+
+    for (i in 0:size(colDefs.name)) {
+        fieldName = string(colDefs.name[i])
+        typeName = string(colDefs.typeString[i])
+        score = scoreFieldSemantic(fieldName, typeName, semantic)
+        if (score > bestScore) {
+            bestScore = score
+            bestField = fieldName
+        }
+    }
+
+    if (bestScore < 25) {
+        return ""
+    }
+    return bestField
+}
+
+def inspectSource(dbName, tbName) {
+    colDefs = schema(loadTable(dbName, tbName))["colDefs"]
+    samples = select top 5 * from loadTable(dbName, tbName)
+
+    ret = dict(STRING, ANY)
+    ret["dbName"] = string(dbName)
+    ret["tbName"] = string(tbName)
+    ret["colDefs"] = colDefs
+    ret["samples"] = samples
+    ret["securityField"] = inferSemanticField(colDefs, "security")
+    ret["timeField"] = inferSemanticField(colDefs, "time")
+    ret["priceField"] = inferSemanticField(colDefs, "price")
+    ret["highField"] = inferSemanticField(colDefs, "high")
+    ret["lowField"] = inferSemanticField(colDefs, "low")
+    ret["volumeField"] = inferSemanticField(colDefs, "volume")
+    ret["amountField"] = inferSemanticField(colDefs, "amount")
+    ret["returnField"] = inferSemanticField(colDefs, "return")
+    ret["prevCloseField"] = inferSemanticField(colDefs, "prev_close")
+    return ret
+}
+
+def inferFrequency(sourceInfo) {
+    colDefs = sourceInfo["colDefs"]
+    timeField = string(sourceInfo["timeField"])
+    if (timeField == "") {
+        return "other"
+    }
+    timeType = exec typeString from colDefs where lower(name) = lower(timeField)
+    if (size(timeType) > 0 && upper(string(timeType[0])) == "DATE") {
+        return "daily"
+    }
+    if (like(lower(string(sourceInfo["tbName"])), "%min%")) {
+        return "minute"
+    }
+    return "other"
+}
+
+def newStringArray() {
+    return array(STRING, 0)
+}
+
+def hasString(items, value) {
+    if (size(items) == 0) {
+        return false
+    }
+    return sum(items == string(value)) > 0
+}
+
+def joinStrings(items) {
+    if (size(items) == 0) {
+        return ""
+    }
+    return concat(items, ",")
+}
+
+def buildSkillSpec(name, aliases, functionHints, requirements) {
+    ret = dict(STRING, ANY)
+    ret["name"] = string(name)
+    ret["aliases"] = aliases
+    ret["functionHints"] = functionHints
+    ret["requirements"] = requirements
+    return ret
+}
+
+def buildSkillRegistry() {
+    ret = dict(STRING, ANY)
+    ret["rolling"] = buildSkillSpec("rolling", ["rolling", "window", "moving", "sliding", "??"], ["mavg", "msum", "mstd", "mcorr"], ["window"])
+    ret["cumulative"] = buildSkillSpec("cumulative", ["cumulative", "cumulatively", "cumsum", "accumulate", "??", "??"], ["cumsum"], [])
+    ret["weighted"] = buildSkillSpec("weighted", ["weighted", "weight", "multiplier", "multiply", "??"], [], [])
+    ret["ratio"] = buildSkillSpec("ratio", ["ratio", "divide", "divided by", "??", "??"], [], [])
+    ret["correlation"] = buildSkillSpec("correlation", ["correlation", "corr", "????", "???"], ["mcorr"], [])
+    ret["rank"] = buildSkillSpec("rank", ["rank", "ranking", "??"], [], [])
+    ret["difference"] = buildSkillSpec("difference", ["difference", "diff", "spread", "??", "??", "??"], [], [])
+    ret["sum"] = buildSkillSpec("sum", ["rolling sum", "moving sum", "msum", "sum over", "??"], ["msum"], [])
+    ret["mean"] = buildSkillSpec("mean", ["rolling mean", "moving average", "moving mean", "average", "avg", "mavg", "mean", "??", "??"], ["mavg"], [])
+    ret["std"] = buildSkillSpec("std", ["volatility", "standard deviation", "stdev", "std", "???", "???"], ["mstd"], [])
+    ret["price_position"] = buildSkillSpec("price_position", ["high-low range", "high low range", "close-low", "high-close", "within the daily high-low range"], [], ["price", "high", "low"])
+    ret["intraday"] = buildSkillSpec("intraday", ["minute", "intraday", "same-day", "??", "??"], [], [])
+    ret["conditional_filter"] = buildSkillSpec("conditional_filter", ["above", "below", "where", "during", "conditional", "if", "foggy", "??", "????", "???"], [], [])
+    ret["composite"] = buildSkillSpec("composite", ["combine", "equally combine", "equal weight", "composite", "??", "????", "??"], [], [])
+    return ret
+}
+
+def firstMatchedAlias(txt, aliases) {
+    for (alias in aliases) {
+        normalized = lower(string(alias))
+        if (normalized != "" && like(txt, "%" + normalized + "%")) {
+            return normalized
+        }
+    }
+    return ""
+}
+
+def inferWindowFromText(factor, content) {
+    txt = lower(string(factor) + " " + string(content))
+    factorTxt = lower(string(factor))
+    candidates = [5, 10, 20, 30, 60, 120, 240]
+
+    for (n in candidates) {
+        nTxt = string(n)
+        if (like(txt, "%" + nTxt + "-day%") || like(txt, "%" + nTxt + " day%") || like(txt, "%" + nTxt + "d%") || like(txt, "%" + nTxt + " period%") || like(txt, "%" + nTxt + "?%") || like(txt, "%" + nTxt + " ????%") || like(txt, "%" + nTxt + "????%")) {
+            return n
+        }
+    }
+
+    for (n in candidates) {
+        nTxt = string(n)
+        if (like(factorTxt, "%" + nTxt + "%") && (like(txt, "%volatility%") || like(txt, "%std%") || like(txt, "%rolling%") || like(txt, "%moving%") || like(txt, "%window%") || like(txt, "%mean%") || like(txt, "%average%") || like(txt, "%avg%") || like(txt, "%sum%") || like(txt, "%???%") || like(txt, "%???%") || like(txt, "%??%"))) {
+            return n
+        }
+    }
+    return NULL
+}
+
+def inferWindowParams(factor, content) {
+    txt = lower(string(factor) + " " + string(content))
+    ret = dict(STRING, ANY)
+    ret["windowSize"] = inferWindowFromText(factor, content)
+    ret["intradayWindow"] = NULL
+    ret["correctionWindow"] = NULL
+    ret["aggregationWindow"] = NULL
+
+    if (like(txt, "%5-minute%") || like(txt, "%5 minute%") || like(txt, "%5??%")) {
+        ret["intradayWindow"] = 5
+    }
+    if (like(txt, "%past 10-day%") || like(txt, "%past 10 day%") || like(txt, "%10-day standard deviation%") || like(txt, "%10 day standard deviation%") || like(txt, "%??10?%") || like(txt, "%?? 10 ?%") || like(txt, "%10?????%")) {
+        ret["correctionWindow"] = 10
+    }
+    if (like(txt, "%20-day mean%") || like(txt, "%20 day mean%") || like(txt, "%20-day average%") || like(txt, "%20 day average%") || like(txt, "%20????%") || like(txt, "%20 ????%")) {
+        ret["aggregationWindow"] = 20
+        ret["windowSize"] = 20
+    }
+    return ret
+}
+
+def extractFactorSkills(factor, content) {
+    txt = lower(string(factor) + " " + string(content))
+    registry = buildSkillRegistry()
+    skillOrder = ["intraday", "conditional_filter", "composite", "rolling", "cumulative", "weighted", "ratio", "correlation", "rank", "difference", "sum", "mean", "std", "price_position"]
+
+    skills = newStringArray()
+    signals = newStringArray()
+    requirements = newStringArray()
+    functionHints = newStringArray()
+    params = inferWindowParams(factor, content)
+
+    for (skillName in skillOrder) {
+        spec = registry[skillName]
+        signal = firstMatchedAlias(txt, spec["aliases"])
+        if (signal != "") {
+            if (!hasString(skills, skillName)) {
+                skills.append!(skillName)
+            }
+            if (!hasString(signals, skillName + ":" + signal)) {
+                signals.append!(skillName + ":" + signal)
+            }
+            for (req in spec["requirements"]) {
+                if (!hasString(requirements, req)) {
+                    requirements.append!(req)
+                }
+            }
+            for (fnHint in spec["functionHints"]) {
+                if (!hasString(functionHints, fnHint)) {
+                    functionHints.append!(fnHint)
+                }
+            }
+        }
+    }
+
+    if (!isNull(params["windowSize"])) {
+        if (!hasString(skills, "rolling")) {
+            skills.append!("rolling")
+        }
+        if (!hasString(requirements, "window")) {
+            requirements.append!("window")
+        }
+        if (!hasString(signals, "param:windowSize=" + string(params["windowSize"]))) {
+            signals.append!("param:windowSize=" + string(params["windowSize"]))
+        }
+    }
+    if (!isNull(params["intradayWindow"])) {
+        if (!hasString(skills, "rolling")) {
+            skills.append!("rolling")
+        }
+        if (!hasString(skills, "intraday")) {
+            skills.append!("intraday")
+        }
+        if (!hasString(requirements, "window")) {
+            requirements.append!("window")
+        }
+        if (!hasString(signals, "param:intradayWindow=" + string(params["intradayWindow"]))) {
+            signals.append!("param:intradayWindow=" + string(params["intradayWindow"]))
+        }
+    }
+    if (!isNull(params["correctionWindow"]) && !hasString(signals, "param:correctionWindow=" + string(params["correctionWindow"]))) {
+        signals.append!("param:correctionWindow=" + string(params["correctionWindow"]))
+    }
+    if (!isNull(params["aggregationWindow"]) && !hasString(signals, "param:aggregationWindow=" + string(params["aggregationWindow"]))) {
+        signals.append!("param:aggregationWindow=" + string(params["aggregationWindow"]))
+    }
+
+    if (like(txt, "%return%") || like(txt, "%???%")) {
+        if (!hasString(requirements, "return")) {
+            requirements.append!("return")
+        }
+        if (!hasString(signals, "field:return")) {
+            signals.append!("field:return")
+        }
+    }
+    if (like(txt, "%volume%") || like(txt, "%???%") || like(txt, "%??%")) {
+        if (!hasString(requirements, "volume")) {
+            requirements.append!("volume")
+        }
+        if (!hasString(signals, "field:volume")) {
+            signals.append!("field:volume")
+        }
+    }
+    if (like(txt, "%amount%") || like(txt, "%????%") || like(txt, "%??%")) {
+        if (!hasString(requirements, "amount")) {
+            requirements.append!("amount")
+        }
+        if (!hasString(signals, "field:amount")) {
+            signals.append!("field:amount")
+        }
+    }
+    if (like(txt, "%close%") || like(txt, "%???%")) {
+        if (!hasString(requirements, "price")) {
+            requirements.append!("price")
+        }
+        if (!hasString(signals, "field:price")) {
+            signals.append!("field:price")
+        }
+    }
+    if (like(txt, "%high%")) {
+        if (!hasString(requirements, "high")) {
+            requirements.append!("high")
+        }
+        if (!hasString(signals, "field:high")) {
+            signals.append!("field:high")
+        }
+    }
+    if (like(txt, "%low%")) {
+        if (!hasString(requirements, "low")) {
+            requirements.append!("low")
+        }
+        if (!hasString(signals, "field:low")) {
+            signals.append!("field:low")
+        }
+    }
+
+    ret = dict(STRING, ANY)
+    ret["skills"] = skills
+    ret["signals"] = signals
+    ret["requirements"] = requirements
+    ret["params"] = params
+    ret["functionHints"] = functionHints
+    return ret
+}
+
+def buildOperatorPlan(skillInfo) {
+    skills = skillInfo["skills"]
+    requirements = skillInfo["requirements"]
+    params = skillInfo["params"]
+
+    ret = dict(STRING, ANY)
+    ret["template"] = ""
+    ret["factorIntent"] = ""
+    ret["functionName"] = ""
+    ret["windowSize"] = NULL
+    ret["requiredFields"] = requirements
+    ret["skills"] = skills
+    ret["supportReason"] = ""
+    ret["preferredFrequency"] = "any"
+    ret["outputFrequency"] = "date"
+    ret["intradayWindow"] = params["intradayWindow"]
+    ret["correctionWindow"] = params["correctionWindow"]
+    ret["aggregationWindow"] = params["aggregationWindow"]
+
+    if (hasString(skills, "intraday") && hasString(skills, "conditional_filter") && hasString(skills, "correlation") && hasString(skills, "ratio") && hasString(skills, "difference") && hasString(skills, "std") && hasString(requirements, "amount") && hasString(requirements, "volume")) {
+        ret["template"] = "intraday_ambiguity_composite"
+        ret["factorIntent"] = "intraday ambiguity conditional composite"
+        ret["functionName"] = "conditional_intraday_composite"
+        ret["preferredFrequency"] = "minute"
+        ret["outputFrequency"] = "month"
+        ret["intradayWindow"] = iif(isNull(params["intradayWindow"]), 5, params["intradayWindow"])
+        ret["correctionWindow"] = iif(isNull(params["correctionWindow"]), 10, params["correctionWindow"])
+        ret["aggregationWindow"] = iif(isNull(params["aggregationWindow"]), 20, params["aggregationWindow"])
+        ret["windowSize"] = int(ret["aggregationWindow"])
+        ret["supportReason"] = "matched intraday conditional filter with std, correlation, ratio, difference, and composite aggregation"
+        return ret
+    }
+
+    if (hasString(skills, "cumulative") && hasString(skills, "weighted") && hasString(skills, "price_position") && hasString(requirements, "volume")) {
+        ret["template"] = "cumulative_weighted_flow"
+        ret["factorIntent"] = "cumulative weighted flow"
+        ret["functionName"] = "cumsum"
+        ret["preferredFrequency"] = "daily"
+        ret["supportReason"] = "matched cumulative + weighted + price_position with volume requirement"
+        return ret
+    }
+
+    if (hasString(skills, "rolling") && hasString(skills, "std") && hasString(requirements, "return")) {
+        ret["template"] = "rolling_std_return"
+        ret["factorIntent"] = "rolling std over return"
+        ret["functionName"] = "mstd"
+        ret["preferredFrequency"] = "daily"
+        ret["windowSize"] = iif(isNull(params["windowSize"]), 20, params["windowSize"])
+        ret["supportReason"] = "matched rolling + std with return requirement"
+        return ret
+    }
+
+    if (hasString(skills, "rolling") && hasString(skills, "mean") && hasString(requirements, "return")) {
+        ret["template"] = "rolling_mean_return"
+        ret["factorIntent"] = "rolling mean over return"
+        ret["functionName"] = "mavg"
+        ret["preferredFrequency"] = "daily"
+        ret["windowSize"] = iif(isNull(params["windowSize"]), 20, params["windowSize"])
+        ret["supportReason"] = "matched rolling + mean with return requirement"
+        return ret
+    }
+
+    if (hasString(skills, "rolling") && hasString(skills, "sum") && hasString(requirements, "return")) {
+        ret["template"] = "rolling_sum_return"
+        ret["factorIntent"] = "rolling sum over return"
+        ret["functionName"] = "msum"
+        ret["preferredFrequency"] = "daily"
+        ret["windowSize"] = iif(isNull(params["windowSize"]), 20, params["windowSize"])
+        ret["supportReason"] = "matched rolling + sum with return requirement"
+        return ret
+    }
+
+    if (size(skills) == 0) {
+        throw "Insufficient skill evidence from factor description. Add reusable operator wording such as rolling, cumulative, weighted, correlation, rank, or difference."
+    }
+    throw "Unsupported skill combination for current mid-low-frequency pipeline: skills=[" + joinStrings(skills) + "], requirements=[" + joinStrings(requirements) + "]"
+}
+
+def sourceSupportsRequirement(sourceInfo, requirement) {
+    req = string(requirement)
+    if (req == "" || req == "window") {
+        return true
+    }
+    if (req == "price") {
+        return string(sourceInfo["priceField"]) != ""
+    }
+    if (req == "high") {
+        return string(sourceInfo["highField"]) != ""
+    }
+    if (req == "low") {
+        return string(sourceInfo["lowField"]) != ""
+    }
+    if (req == "volume") {
+        return string(sourceInfo["volumeField"]) != ""
+    }
+    if (req == "amount") {
+        return string(sourceInfo["amountField"]) != ""
+    }
+    if (req == "return") {
+        return string(sourceInfo["returnField"]) != "" || string(sourceInfo["priceField"]) != ""
+    }
+    return true
+}
+
+def choosePrimarySource(sources, skillInfo, operatorPlan) {
+    requiredFields = operatorPlan["requiredFields"]
+    preferredFreq = string(operatorPlan["preferredFrequency"])
+    bestScore = -1
+    bestDb = ""
+    bestTb = ""
+
+    for (i in 0:tableRows(sources)) {
+        if (!bool(sources.accessible[i])) {
+            continue
+        }
+
+        dbName = string(sources.database[i])
+        tbName = string(sources.table[i])
+        inspect = inspectSource(dbName, tbName)
+        freq = inferFrequency(inspect)
+
+        if (string(inspect["securityField"]) == "" || string(inspect["timeField"]) == "") {
+            continue
+        }
+
+        compatible = true
+        score = 40
+        if (preferredFreq == "minute") {
+            if (freq == "minute") {
+                score = score + 40
+            } else if (freq == "daily") {
+                score = score - 20
+            }
+        } else if (preferredFreq == "daily") {
+            if (freq == "daily") {
+                score = score + 30
+            } else if (freq == "minute") {
+                score = score - 10
+            }
+        } else if (freq == "daily") {
+            score = score + 20
+        }
+
+        for (req in requiredFields) {
+            if (!sourceSupportsRequirement(inspect, req)) {
+                compatible = false
+                break
+            }
+            if (string(req) != "window") {
+                score = score + 15
+            }
+        }
+
+        if (!compatible) {
+            continue
+        }
+
+        if (score > bestScore) {
+            bestScore = score
+            bestDb = dbName
+            bestTb = tbName
+        }
+    }
+
+    if (bestScore < 0) {
+        throw "No accessible source matches extracted requirements: [" + joinStrings(requiredFields) + "]"
+    }
+    return dict(["dbName", "tbName"], [bestDb, bestTb])
+}
+
+def buildExecutionConfig(task, sourceInfo, operatorPlan) {
+    template = string(operatorPlan["template"])
+    ret = dict(STRING, ANY)
+    ret["targetFreq"] = "DATE"
+    ret["isCS"] = false
+    ret["computeFreq"] = "DATE"
+
+    if (template == "cumulative_weighted_flow") {
+        ret["isSlide"] = false
+        ret["windowSize"] = 2
+        return ret
+    }
+
+    if (template == "intraday_ambiguity_composite") {
+        ret["isSlide"] = true
+        ret["windowSize"] = int(operatorPlan["aggregationWindow"])
+        return ret
+    }
+
+    if (template == "rolling_std_return" || template == "rolling_mean_return" || template == "rolling_sum_return") {
+        ret["isSlide"] = true
+        ret["windowSize"] = int(operatorPlan["windowSize"])
+        return ret
+    }
+
+    throw "Unsupported operator plan for execution config: " + template
+}
+
+def chooseExecuteMode(sourceInfo, executionConfig, forceMR) {
+    return starfish::facplfRun::MREligible(
+        sourceInfo["dbName"],
+        sourceInfo["tbName"],
+        executionConfig["targetFreq"],
+        executionConfig["isCS"],
+        executionConfig["isSlide"],
+        executionConfig["computeFreq"],
+        executionConfig["windowSize"],
+        forceMR
+    )
+}
+
+def choosePriceSource(selectedSourceInfo, discoveredSources) {
+    freq = inferFrequency(selectedSourceInfo)
+    if (freq == "daily" && string(selectedSourceInfo["priceField"]) != "" && string(selectedSourceInfo["timeField"]) != "" && string(selectedSourceInfo["securityField"]) != "") {
+        return dict(
+            ["priceDbname", "priceTbname", "priceDate", "priceSymbol", "priceCol"],
+            [
+                string(selectedSourceInfo["dbName"]),
+                string(selectedSourceInfo["tbName"]),
+                string(selectedSourceInfo["timeField"]),
+                string(selectedSourceInfo["securityField"]),
+                string(selectedSourceInfo["priceField"])
+            ]
+        )
+    }
+
+    for (i in 0:tableRows(discoveredSources)) {
+        dbName = string(discoveredSources.database[i])
+        tbName = string(discoveredSources.table[i])
+        inspect = inspectSource(dbName, tbName)
+        if (inferFrequency(inspect) == "daily" && string(inspect["priceField"]) != "" && string(inspect["timeField"]) != "" && string(inspect["securityField"]) != "") {
+            return dict(
+                ["priceDbname", "priceTbname", "priceDate", "priceSymbol", "priceCol"],
+                [dbName, tbName, string(inspect["timeField"]), string(inspect["securityField"]), string(inspect["priceField"])]
+            )
+        }
+    }
+
+    throw "Could not find a daily price source for evaluation"
+}
+
+def runFactorCode(code, executeType, mrDbname, mrTbname) {
+    if (executeType == "execute") {
+        runScript("def runFactorPipelineCode() {\n" + code + "\nreturn result}")
+        return funcByName(`runFactorPipelineCode)()
+    }
+    if (executeType == "mrExecute") {
+        return starfish::facplfRun::facplf_mr_execute(code, mrDbname, mrTbname)
+    }
+    throw "Unsupported executeType"
+}
+
+def generateAnalysisReport(factorCode, executeType, priceDbname, priceTbname, priceDate, priceSymbol, priceCol, mrDbname, mrTbname) {
+    ex = ''
+    factorResult = NULL
+    try {
+        factorResult = runFactorCode(factorCode, executeType, mrDbname, mrTbname)
+    } catch(ex) {
+        throw "factor execution failed: " + string(ex[0]) + string(ex[1])
+    }
+
+    analysis_param_dict = dict(STRING,ANY)
+    analysis_param_dict["factorResult"] = select timestamp(tradeTime) as tradetime, securityId as securityid, value from factorResult order by tradeTime
+    analysis_param_dict["startDate"] = exec date(min(tradetime)) from analysis_param_dict["factorResult"]
+    analysis_param_dict["endDate"] = exec date(max(tradetime)) from analysis_param_dict["factorResult"]
+    analysis_param_dict["priceTable"] = loadTable(priceDbname, priceTbname)
+    analysis_param_dict["priceDate"] = priceDate
+    analysis_param_dict["priceSymbol"] = priceSymbol
+    analysis_param_dict["priceCol"] = priceCol
+
+    starfish::facplfBasic::facplf_load_library()
+    template_id = uuid("00000000-0000-0000-0004-000000000002")
+    code = (exec base64Decode(code) from loadTable("dfs://facplf_run_db", "code") where id = template_id and type = 4 context by id limit -1)[0]
+    template_name = starfish::facplfBasic::facplf_get_func_name(code)
+    runScript(code)
+    res = parseExpr(template_name + "(" + concat(analysis_param_dict.keys() + "=" + analysis_param_dict.keys(), ",") + ")", analysis_param_dict).eval()
+
+    try {
+        res["mean_monthly_ic"] = select string(year(month_date)) as year, string(monthOfYear(month_date)) as month, * from res["mean_monthly_ic"]
+    } catch(ex) {}
+
+    res["mean_ret_spread_quant"] = res["mean_ret_spread_quant"].lj(res["std_spread_quant"] as monthly_avg, `date)
+    Mean_Factor_Rank_Autocorrelation_1 = select 1 as `Auto_Corr, * from res["Mean_Factor_Rank_Autocorrelation"]
+    res["Mean_Factor_Rank_Autocorrelation"] = select Mean_Factor_Rank_Autocorrelation from Mean_Factor_Rank_Autocorrelation_1 pivot by Auto_Corr, periods
+    cols = array(STRING, 0, 10)
+    cols.append!(`autocorrelation)
+    cols.append!("turnover_of_" + res["Mean_Factor_Rank_Autocorrelation"].colNames()[1:] + "D")
+    res["Mean_Factor_Rank_Autocorrelation"] = res["Mean_Factor_Rank_Autocorrelation"].rename!(cols)
+
+    lastgroup = max(exec distinct factor_quantile from res["quantile_turnover"])
+    t = select date, iif(factor_quantile == 1, `bottom, `top) + "_quantile_turnover_of_" + string(periods) + "D" as name, quantile_turnover from res["quantile_turnover"] where factor_quantile in [1, lastgroup]
+    res["quantile_turnover"] = select quantile_turnover from t pivot by date, name
+
+    res["autocorrelation"] = select factor_rank_autocorrelation from res["autocorrelation"] pivot by date, periods
+    res["cumulative_factor_data"] = table(res["cumulative_factor_data"] as cumulative_factor_data)
+    periods = int(res["Mean_Turnover"].columnNames()[1:])
+    res["periods"] = dict(0..(count(periods)-1), periods)
+    res["Mean_Turnover"] = res["Mean_Turnover"].rename!(res["Mean_Turnover"].columnNames()[1:], "turnover_layer_" + res["Mean_Turnover"].columnNames()[1:])
+    return res
+}
+
+def buildFactorCode(task, sourceInfo, skillInfo, operatorPlan) {
+    factor = string(task["factor"])
+    dbName = string(sourceInfo["dbName"])
+    tbName = string(sourceInfo["tbName"])
+    timeField = string(sourceInfo["timeField"])
+    securityField = string(sourceInfo["securityField"])
+    returnField = string(sourceInfo["returnField"])
+    priceField = string(sourceInfo["priceField"])
+    highField = string(sourceInfo["highField"])
+    lowField = string(sourceInfo["lowField"])
+    volumeField = string(sourceInfo["volumeField"])
+    amountField = string(sourceInfo["amountField"])
+
+    if (timeField == "" || securityField == "") {
+        throw "Missing time/security field mapping"
+    }
+
+    mapping = ""
+    retExpr = ""
+    nullField = ""
+    template = string(operatorPlan["template"])
+    skills = skillInfo["skills"]
+    skillSummary = joinStrings(skills)
+
+    if (template == "cumulative_weighted_flow") {
+        if (highField == "" || lowField == "" || priceField == "" || volumeField == "") {
+            throw "Template cumulative_weighted_flow requires high/low/close/volume field mapping"
+        }
+
+        multiplierExpr = "iif(" + highField + " != " + lowField + ", ((" + priceField + " - " + lowField + ") - (" + highField + " - " + priceField + ")) / (" + highField + " - " + lowField + "), 0.0)"
+        moneyFlowExpr = "(" + multiplierExpr + ") * " + volumeField
+        code = ""
+        code = code + "// " + factor + ": cumulative weighted flow\n"
+        code = code + "// Data source: " + dbName + " / " + tbName + "\n"
+        code = code + "// Extracted skills: " + skillSummary + "\n"
+        code = code + "// Formula: factor_t = cumsum((((close-low)-(high-close))/(high-low)) * volume)\n"
+        code = code + "// Field mapping: " + timeField + " -> tradeTime, " + securityField + " -> securityId, "
+        code = code + priceField + "/" + highField + "/" + lowField + "/" + volumeField + " -> close/high/low/volume\n"
+        code = code + "result = select " + timeField + " as tradeTime, " + securityField + " as securityId, '" + factor + "' as factorname, "
+        code = code + "cumsum(" + moneyFlowExpr + ") as value from loadTable('" + dbName + "', '" + tbName + "') "
+        code = code + "where not isNull(" + priceField + ") and not isNull(" + highField + ") and not isNull(" + lowField + ") and not isNull(" + volumeField + ") "
+        code = code + "context by " + securityField + " csort " + timeField + "\n"
+        code = code + "result = select * from result where not isNull(value)\n"
+
+        ret = dict(STRING, ANY)
+        ret["code"] = code
+        ret["fieldMapping"] = dict(
+            ["securityField", "timeField", "closeField", "highField", "lowField", "volumeField", "moneyFlowExpr", "operatorTemplate", "skills"],
+            [securityField, timeField, priceField, highField, lowField, volumeField, moneyFlowExpr, template, skills]
+        )
+        return ret
+    }
+
+    if (template == "intraday_ambiguity_composite") {
+        if (priceField == "" || volumeField == "" || amountField == "") {
+            throw "Template intraday_ambiguity_composite requires price/volume/amount field mapping"
+        }
+
+        intradayWindow = string(int(operatorPlan["intradayWindow"]))
+        correctionWindow = string(int(operatorPlan["correctionWindow"]))
+        aggregationWindow = string(int(operatorPlan["aggregationWindow"]))
+        code = ""
+        code = code + "// " + factor + ": intraday ambiguity conditional composite\n"
+        code = code + "// Data source: " + dbName + " / " + tbName + "\n"
+        code = code + "// Extracted skills: " + skillSummary + "\n"
+        code = code + "base = select " + securityField + " as securityId, date(" + timeField + ") as tradeDate, " + timeField + " as tradeTime, " + priceField + " as closePx, " + volumeField + " as volumeValue, " + amountField + " as amountValue, rowNo(" + priceField + ") as intraIndex, count(" + priceField + ") as intraCount, move(" + priceField + ", 1) as prevPx from loadTable('" + dbName + "', '" + tbName + "') where not isNull(" + priceField + ") and not isNull(" + volumeField + ") and not isNull(" + amountField + ") context by " + securityField + ", date(" + timeField + ") csort " + timeField + "\n"
+        code = code + "base = select *, closePx / prevPx - 1 as minuteRet from base where intraIndex > 0 and intraIndex < intraCount - 1 and not isNull(prevPx)\n"
+        code = code + "minuteVol = select securityId, tradeDate, tradeTime, amountValue, volumeValue, minuteRet, mstd(minuteRet, " + intradayWindow + ") as minuteVol from base context by securityId, tradeDate csort tradeTime\n"
+        code = code + "minuteAmb = select securityId, tradeDate, tradeTime, amountValue, volumeValue, minuteRet, minuteVol, mstd(minuteVol, " + intradayWindow + ") as ambiguity from minuteVol context by securityId, tradeDate csort tradeTime\n"
+        code = code + "dayMean = select securityId, tradeDate, avg(ambiguity) as dayMeanAmbiguity from minuteAmb where not isNull(ambiguity) group by securityId, tradeDate\n"
+        code = code + "minuteAmb = minuteAmb.lj(dayMean, `securityId`tradeDate)\n"
+        code = code + "fogMinutes = select *, ambiguity > dayMeanAmbiguity as isFog from minuteAmb where not isNull(ambiguity) and not isNull(dayMeanAmbiguity)\n"
+        code = code + "dailyStats = select securityId, tradeDate, corr(ambiguity, amountValue) as ambiguityCorrelation, sum(iif(isFog, amountValue, 0.0)) as fogAmountSum, sum(amountValue) as totalAmountSum, sum(iif(isFog, 1.0 * volumeValue, 0.0)) as fogVolumeSum, sum(1.0 * volumeValue) as totalVolumeSum, sum(iif(isFog, 1, 0)) as fogCount, count(amountValue) as minuteCount from fogMinutes group by securityId, tradeDate\n"
+        code = code + "dailyStats = select *, iif(fogCount > 0 and totalAmountSum != 0, (fogAmountSum / fogCount) / (totalAmountSum / minuteCount), NULL) as amountRatio, iif(fogCount > 0 and totalVolumeSum != 0, (fogVolumeSum / fogCount) / (totalVolumeSum / minuteCount), NULL) as volumeRatio from dailyStats\n"
+        code = code + "dailyStats = select *, amountRatio - volumeRatio as spread from dailyStats\n"
+        code = code + "dailyStats = select *, mstd(spread, " + correctionWindow + ") as spreadStd from dailyStats context by securityId csort tradeDate\n"
+        code = code + "dailyStats = select *, iif(spread < 0 and not isNull(spreadStd) and spreadStd != 0, spread / spreadStd, spread) as correctedSpreadRaw from dailyStats\n"
+        code = code + "crossScale = select tradeDate, sum(iif(spread < 0, spread, 0.0)) as negSpreadSum, sum(iif(correctedSpreadRaw < 0, correctedSpreadRaw, 0.0)) as negCorrectedSum from dailyStats group by tradeDate\n"
+        code = code + "dailyStats = dailyStats.lj(crossScale, `tradeDate)\n"
+        code = code + "dailyStats = select *, iif(correctedSpreadRaw < 0 and negCorrectedSum != 0, correctedSpreadRaw / negCorrectedSum * negSpreadSum, correctedSpreadRaw) as correctedSpread from dailyStats\n"
+        code = code + "dailySignals = select securityId, tradeDate, mavg(ambiguityCorrelation, " + aggregationWindow + ") as ambiguityCorrAvg, mavg(amountRatio, " + aggregationWindow + ") as amountRatioAvg, mavg(correctedSpread, " + aggregationWindow + ") as correctedSpreadAvg from dailyStats context by securityId csort tradeDate\n"
+        code = code + "monthlyTagged = select securityId, tradeDate, monthEnd(tradeDate) as monthDate, rowNo(tradeDate) as monthRow, count(tradeDate) as monthCount, ambiguityCorrAvg, amountRatioAvg, correctedSpreadAvg from dailySignals context by securityId, monthEnd(tradeDate) csort tradeDate\n"
+        code = code + "result = select monthDate as tradeTime, securityId, '" + factor + "' as factorname, (ambiguityCorrAvg + amountRatioAvg + correctedSpreadAvg) / 3.0 as value from monthlyTagged where monthRow = monthCount - 1 and not isNull(ambiguityCorrAvg) and not isNull(amountRatioAvg) and not isNull(correctedSpreadAvg)\n"
+        code = code + "result = select * from result where not isNull(value)\n"
+
+        ret = dict(STRING, ANY)
+        ret["code"] = code
+        ret["fieldMapping"] = dict(
+            ["securityField", "timeField", "priceField", "volumeField", "amountField", "operatorTemplate", "skills", "intradayWindow", "correctionWindow", "aggregationWindow"],
+            [securityField, timeField, priceField, volumeField, amountField, template, skills, int(operatorPlan["intradayWindow"]), int(operatorPlan["correctionWindow"]), int(operatorPlan["aggregationWindow"])]
+        )
+        return ret
+    }
+
+    if (returnField != "") {
+        retExpr = returnField + " / 100.0"
+        nullField = returnField
+        mapping = returnField
+    } else if (priceField != "") {
+        retExpr = priceField + " / move(" + priceField + ", 1) - 1"
+        nullField = priceField
+        mapping = priceField
+    } else {
+        throw "Could not derive return expression"
+    }
+
+    if (template != "rolling_std_return" && template != "rolling_mean_return" && template != "rolling_sum_return") {
+        throw "Unsupported operator template for current mid-low-frequency code generation: " + template + "; extracted skills=[" + skillSummary + "]"
+    }
+
+    funcName = string(operatorPlan["functionName"])
+    windowSize = int(operatorPlan["windowSize"])
+    code = ""
+    code = code + "// " + factor + ": mid-low-frequency return operator\n"
+    code = code + "// Data source: " + dbName + " / " + tbName + "\n"
+    code = code + "// Extracted skills: " + skillSummary + "\n"
+    code = code + "// Field mapping: " + timeField + " -> tradeTime, " + securityField + " -> securityId, " + mapping + " -> return input\n"
+    code = code + "result = select " + timeField + " as tradeTime, " + securityField + " as securityId, '" + factor + "' as factorname, "
+    code = code + funcName + "(" + retExpr + ", " + string(windowSize) + ") as value from loadTable('" + dbName + "', '" + tbName + "') "
+    code = code + "where not isNull(" + nullField + ") context by " + securityField + " csort " + timeField + "\n"
+    code = code + "result = select * from result where not isNull(value)\n"
+
+    ret = dict(STRING, ANY)
+    ret["code"] = code
+    ret["fieldMapping"] = dict(["securityField", "timeField", "returnExpr", "nullField", "operatorTemplate", "skills"], [securityField, timeField, retExpr, nullField, template, skills])
+    return ret
+}
+
+def buildResultSummary(task, selectedSourceInfo, executeType, code, priceSource, skillInfo, operatorPlan, executionConfig, modeInfo) {
+    template = string(operatorPlan["template"])
+    skills = skillInfo["skills"]
+    skillSummary = joinStrings(skills)
+    ret = dict(STRING, ANY)
+
+    ret["factor_chinese_name"] = string(task["factor"])
+    if (template == "cumulative_weighted_flow") {
+        ret["hypothesis"] = "A cumulative weighted flow built from close position inside the daily range and volume can proxy for sustained accumulation or distribution pressure."
+        ret["description"] = "This factor uses a reusable cumulative-weighted-flow template: first build a price-position signal from close, high, and low, then weight it by volume, and finally cumulatively sum it by security over time."
+        ret["formulation"] = "factor_t = cumsum((((C_t-L_t)-(H_t-C_t))/(H_t-L_t))*V_t)"
+    } else if (template == "intraday_ambiguity_composite") {
+        ret["hypothesis"] = "When intraday ambiguity is high and transactions concentrate in low-price foggy periods, the market may be overreacting and leave room for later recovery."
+        ret["description"] = "This factor uses an intraday conditional composite template: compute ambiguity from volatility-of-volatility on minute returns, define foggy minutes relative to same-day mean ambiguity, build daily correlation/ratio/spread features, correct the negative spread leg, and aggregate the three daily signals into a monthly factor."
+        ret["formulation"] = "factor_m = mean20(corr(ambiguity, amount)) + mean20(amountRatio) + mean20(correctedSpread), then equal-weight combine"
+    } else if (template == "rolling_std_return") {
+        ret["hypothesis"] = "Higher short-term return dispersion may capture risk compensation or unstable sentiment."
+        ret["description"] = "This factor uses a reusable rolling operator template and applies mstd to returns over the inferred window."
+        ret["formulation"] = "factor_t = mstd(r_t, " + string(executionConfig["windowSize"]) + ")"
+    } else if (template == "rolling_mean_return") {
+        ret["hypothesis"] = "The rolling mean of returns can capture short-horizon trend persistence."
+        ret["description"] = "This factor uses a reusable rolling operator template and applies mavg to returns over the inferred window."
+        ret["formulation"] = "factor_t = mavg(r_t, " + string(executionConfig["windowSize"]) + ")"
+    } else if (template == "rolling_sum_return") {
+        ret["hypothesis"] = "The rolling sum of returns can capture short-horizon cumulative momentum."
+        ret["description"] = "This factor uses a reusable rolling operator template and applies msum to returns over the inferred window."
+        ret["formulation"] = "factor_t = msum(r_t, " + string(executionConfig["windowSize"]) + ")"
+    } else {
+        ret["hypothesis"] = "Generated from extracted reusable operator skills."
+        ret["description"] = "The factor code was generated from the extracted operator plan in the current mid-low-frequency DOS core."
+        ret["formulation"] = string(operatorPlan["factorIntent"])
+    }
+
+    ret["feedback"] = "executeType=" + executeType + "; operatorTemplate=" + template + "; mrEligibleReason=" + string(modeInfo["reason"])
+    ret["code"] = code
+    ret["executeType"] = executeType
+    ret["hypothesis_feedback"] = "Generated from extracted skills=[" + skillSummary + "] and operatorTemplate=" + template
+    ret["selectedSource"] = dict(["dbName", "tbName"], [string(selectedSourceInfo["dbName"]), string(selectedSourceInfo["tbName"])])
+    ret["evaluation_price_source"] = priceSource
+    ret["skills"] = skills
+    ret["operatorTemplate"] = template
+    return ret
+}
+
+def runFactorPipeline(content, factor, forceMR, dbNames, tbNames) {
+    starfish::facplfBasic::facplf_load_library()
+
+    task = normalizeTask(content, factor, forceMR, dbNames, tbNames)
+    sources = discoverSources(task)
+    skillInfo = extractFactorSkills(task["factor"], task["content"])
+    operatorPlan = buildOperatorPlan(skillInfo)
+    selectedSource = choosePrimarySource(sources, skillInfo, operatorPlan)
+    sourceInfo = inspectSource(selectedSource["dbName"], selectedSource["tbName"])
+    executionConfig = buildExecutionConfig(task, sourceInfo, operatorPlan)
+    codeInfo = buildFactorCode(task, sourceInfo, skillInfo, operatorPlan)
+    modeInfo = chooseExecuteMode(sourceInfo, executionConfig, task["forceMR"])
+
+    executeType = "execute"
+    if (modeInfo["isEligible"]) {
+        executeType = "mrExecute"
+    }
+
+    factorResult = runFactorCode(codeInfo["code"], executeType, selectedSource["dbName"], selectedSource["tbName"])
+    preview = select top 5 * from factorResult
+    priceSource = choosePriceSource(sourceInfo, sources)
+    evaluation = generateAnalysisReport(
+        codeInfo["code"],
+        executeType,
+        priceSource["priceDbname"],
+        priceSource["priceTbname"],
+        priceSource["priceDate"],
+        priceSource["priceSymbol"],
+        priceSource["priceCol"],
+        selectedSource["dbName"],
+        selectedSource["tbName"]
+    )
+
+    ret = dict(STRING, ANY)
+    ret["code"] = codeInfo["code"]
+    ret["result"] = buildResultSummary(task, sourceInfo, executeType, codeInfo["code"], priceSource, skillInfo, operatorPlan, executionConfig, modeInfo)
+    ret["evaluation"] = evaluation
+    ret["meta"] = dict(["skillInfo", "operatorPlan", "executionConfig", "modeInfo", "fieldMapping", "selectedSource", "sources", "sample"], [skillInfo, operatorPlan, executionConfig, modeInfo, codeInfo["fieldMapping"], selectedSource, sources, sourceInfo["samples"]])
+    ret["preview"] = preview
+    return ret
+}

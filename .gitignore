@@ -137,6 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+scripts/zju_transfer_monitor.env
 .venv
 env/
 venv/

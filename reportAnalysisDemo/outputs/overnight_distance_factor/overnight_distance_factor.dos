@@ -1,0 +1,44 @@
+// overnight_distance_factor 因子计算
+// 1. 计算日内收益率：intraday_return = close / open - 1
+// 2. 计算换手率变化量：turnover_change = turnover_rate - prev_turnover_rate
+// 3. 计算全市场换手率变化量的截面均值
+// 4. 翻转收益率：adjusted_return = if(turnover_change < market_mean, -1 * intraday_return, intraday_return)
+// 5. 计算20日移动平均
+// 6. 每月最后一个交易日输出因子值
+
+// 加载数据
+t = loadTable("dfs://stock_daily", "stock_daily_prev")
+
+// 按股票代码和时间排序
+t = select ts_code as securityId, trade_date as tradeTime, open, close, turnover_rate from t order by securityId, tradeTime
+
+// 计算日内收益率
+t = select *, close / open - 1 as intraday_return from t context by securityId
+
+// 计算换手率变化量（当日换手率 - 前一日换手率）
+t = select *, turnover_rate - prev(turnover_rate) as turnover_change from t context by securityId
+
+// 计算每日全市场换手率变化量的截面均值
+market_mean = select tradeTime, avg(turnover_change) as market_turnover_mean from t where isValid(turnover_change) group by tradeTime
+
+// 合并市场均值到个股数据
+t = lj(t, market_mean, `tradeTime)
+
+// 翻转收益率：低于市场均值的股票日内收益率乘以-1
+t = select *, iif(turnover_change < market_turnover_mean, -1 * intraday_return, intraday_return) as adjusted_return from t
+
+// 计算20日移动平均的翻转后收益率
+t = select *, mavg(adjusted_return, 20) as factor_value from t context by securityId
+
+// 筛选每月最后一个交易日
+// 首先标记每月最后一天
+t = select *, monthEnd(tradeTime) as month_end from t
+t = select *, tradeTime == month_end as is_month_end from t
+
+// 生成最终结果表：每月最后一个交易日的因子值
+result = select tradeTime, securityId, "overnight_distance_factor" as factorname, factor_value as value from t where is_month_end = true and isValid(factor_value)
+
+// 按时间和股票排序
+result = select * from result order by tradeTime, securityId
+
+result

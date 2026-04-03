@@ -1,4 +1,0 @@
-interface:
-  display_name: "DDB Table Schema"
-  short_description: "Show DolphinDB table schema by db and table."
-  default_prompt: "Use this skill to inspect DolphinDB table schema by providing dbUrl and tableName, executed through the shared run_dos.py gateway."

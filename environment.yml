@@ -1,0 +1,14 @@
+# Conda env for DolphinDB skills (run_dos.py) and table samples.
+# First-time: conda env create -f environment.yml
+# Reinstall env: conda env remove -n report-dolphindb -y  then  conda env create -f environment.yml
+# Activate: conda activate report-dolphindb
+name: report-dolphindb
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - dolphindb
+      - pandas>=2.0.0
+      - pypdf>=5.0.0
